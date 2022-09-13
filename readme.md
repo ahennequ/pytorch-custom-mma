@@ -27,3 +27,22 @@ slower: 1.452x   seq_len: 2048  fused kernel: 21.326    baseline: 14.690
                  seq_len: 4096  fused kernel: 85.707    baseline: OOM
                  seq_len: 8192  fused kernel: 365.019   baseline: OOM
 ```
+
+## Building the image to run in HPC cluster
+
+On local computer (need root access):
+
+```bash
+sudo singularity build container.sif container.def
+```
+
+Run interactive shell:
+```bash
+singularity shell --nv container.sif
+```
+
+Install & run:
+```bash
+python3 setup.py install --user
+python3 benchmark.py
+```
