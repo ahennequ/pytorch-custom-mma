@@ -1,6 +1,7 @@
 #pragma once
 
 namespace mma {
+    template<typename scalar_t>
     struct warp_tile {
         // How much data is processed by a single thread:
         static constexpr int N_thread = 4;
@@ -49,7 +50,7 @@ namespace mma {
         }
 
         // Performs C = A * B + C
-        __device__ void mma(const float* A_sm_ptr, const float* B_sm_ptr, int k) {
+        __device__ void mma(const scalar_t* A_sm_ptr, const scalar_t* B_sm_ptr, int k) {
             // Load a N x 1 fragment of A from shared memory to registers:
             #pragma unroll
             for (int i = 0; i < N_thread; i++) {
@@ -82,7 +83,7 @@ namespace mma {
         }
 
         // Copy C from registers to shared memory
-        __device__ void store(float* C_sm_ptr) {
+        __device__ void store(scalar_t* C_sm_ptr) {
             #pragma unroll
             for (int i = 0; i < N_thread; i++) {
                 #pragma unroll
@@ -93,7 +94,7 @@ namespace mma {
             }
         }
 
-        __device__ void store_transpose(float* C_sm_ptr) {
+        __device__ void store_transpose(scalar_t* C_sm_ptr) {
             #pragma unroll
             for (int i = 0; i < N_thread; i++) {
                 #pragma unroll

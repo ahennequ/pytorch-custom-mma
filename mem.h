@@ -7,8 +7,8 @@ namespace mem {
         int N;
         int M;
 
-        __device__ shared_fragment(T* shared_base, int N, int M)
-          : smem(shared_base), N(N), M(M) { }
+        __device__ shared_fragment(char* shared_base, int N, int M)
+          : smem(reinterpret_cast<T*>(shared_base)), N(N), M(M) { }
 
         __device__ void load(const T* gmem) {
             for (int i = threadIdx.x; i < N * M; i += blockDim.x) {
@@ -61,8 +61,8 @@ namespace mem {
             return N * M;
         }
 
-        __device__ T* next() {
-            return smem + size();
+        __device__ char* next() {
+            return reinterpret_cast<char*>(smem + size());
         }
     };
 } // namespace mem

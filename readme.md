@@ -1,14 +1,14 @@
 ## Experiment with custom attention
 
 ```python
-# C = exp(scale * (Q * B^T)) * V
+# C = exp(scale * (Q * K^T)) * V
 def plain_impl(Q: TensorType['b', 'i', 'd'],
                K: TensorType['b', 'j', 'd'],
                V: TensorType['b', 'j', 'd'],
                scale=8) -> TensorType['b', 'i', 'j']:
-    C = einsum('... i d, ... j d -> ... i j', Q, K).float()
+    C = einsum('... i d, ... j d -> ... i j', Q, K)
     C = torch.exp(C * scale)
-    O = einsum('... i j, ... j d -> ... i d', C, V).float()
+    O = einsum('... i j, ... j d -> ... i d', C, V)
     return O
 ```
 

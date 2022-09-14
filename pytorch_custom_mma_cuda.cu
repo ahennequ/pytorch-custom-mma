@@ -25,11 +25,12 @@ void check(const char* file, const int line) {
 template <typename scalar_t, int dims>
 using PackedAccessor = torch::PackedTensorAccessor32<scalar_t, dims, torch::RestrictPtrTraits>;
 
+template <typename scalar_t>
 __global__ void forward_kernel(
-    const PackedAccessor<float, 3> A,
-    const PackedAccessor<float, 3> B,
-    const PackedAccessor<float, 3> V,
-          PackedAccessor<float, 3> C,
+    const PackedAccessor<scalar_t, 3> A,
+    const PackedAccessor<scalar_t, 3> B,
+    const PackedAccessor<scalar_t, 3> V,
+          PackedAccessor<scalar_t, 3> C,
     const float scale
 ) {
     const int batch = blockIdx.y;
@@ -38,17 +39,17 @@ __global__ void forward_kernel(
     const int M = B.size(1);
     const int D = A.size(2);
 
-    const int tile_w = M / mma::warp_tile::M_tile;
+    const int tile_w = M / mma::warp_tile<scalar_t>::M_tile;
     const int tile_y = blockIdx.x;
 
-    extern __shared__ float _shared_mem[];
+    extern __shared__ char _shared_mem[];
 
-    mma::warp_tile AB_mma; // 32x16 tile per warp in registers -> process 64x64 with the block
-    mma::warp_tile out_mma; 
+    mma::warp_tile<scalar_t> AB_mma; // 32x16 tile per warp in registers -> process 64x64 with the block
+    mma::warp_tile<scalar_t> out_mma;
     
-    mem::shared_fragment<float> A_sm{_shared_mem, D, mma::warp_tile::N_tile};
-    mem::shared_fragment<float> B_sm{A_sm.next(), D, mma::warp_tile::M_tile};
-    mem::shared_fragment<float> C_sm{B_sm.next(), mma::warp_tile::N_tile, mma::warp_tile::M_tile};
+    mem::shared_fragment<scalar_t> A_sm{_shared_mem, D, mma::warp_tile<scalar_t>::N_tile};
+    mem::shared_fragment<scalar_t> B_sm{A_sm.next(), D, mma::warp_tile<scalar_t>::M_tile};
+    mem::shared_fragment<scalar_t> C_sm{B_sm.next(), mma::warp_tile<scalar_t>::N_tile, mma::warp_tile<scalar_t>::M_tile};
 
     out_mma.zero();
 
@@ -64,7 +65,7 @@ __global__ void forward_kernel(
             AB_mma.mma(A_sm.smem, B_sm.smem, d);
         }
 
-        AB_mma.pointwise([&](float el) {
+        AB_mma.pointwise([&](scalar_t el) {
             return expf(scale * el); 
         });
 
@@ -98,31 +99,29 @@ std::vector<at::Tensor> mma_forward(
 ) {
     const at::cuda::OptionalCUDAGuard device_guard(device_of(A));
 
-    /*auto C = A.mm(B.t());
-    C *= scale;
-    return { C };*/
-
     const int batch = A.size(0);
     const int N = A.size(1);
     const int M = B.size(1);
     const int D = A.size(2);
 
-    auto options = torch::TensorOptions().device(device_of(A)).dtype(torch::kFloat);
+    auto options = torch::TensorOptions().device(device_of(A)).dtype(A.scalar_type());
     auto C = at::empty({batch, N, D}, options);
 
     const dim3 threads_per_block(256);
-    const dim3 blocks(N / mma::warp_tile::N_tile, batch);
-    const unsigned shared_mem_size = (mma::warp_tile::N_tile * D +
-                                      mma::warp_tile::M_tile * D +
-                                      mma::warp_tile::N_tile * mma::warp_tile::M_tile) * sizeof(float);
 
-    forward_kernel<<<blocks, threads_per_block, shared_mem_size>>>(
-        ACCESSOR(A, 3, float),
-        ACCESSOR(B, 3, float),
-        ACCESSOR(V, 3, float),
-        ACCESSOR(C, 3, float),
-        scale
-    );
+    AT_DISPATCH_FLOATING_TYPES_AND_HALF(A.scalar_type(), "forward_cosine_sim_attention_forward", ([&] {
+        const dim3 blocks(N / mma::warp_tile<scalar_t>::N_tile, batch);
+        const unsigned shared_mem_size = (mma::warp_tile<scalar_t>::N_tile * D +
+                                          mma::warp_tile<scalar_t>::M_tile * D +
+                                          mma::warp_tile<scalar_t>::N_tile * mma::warp_tile<scalar_t>::M_tile) * sizeof(scalar_t);
+        forward_kernel<scalar_t><<<blocks, threads_per_block, shared_mem_size>>>(
+            ACCESSOR(A, 3, scalar_t),
+            ACCESSOR(B, 3, scalar_t),
+            ACCESSOR(V, 3, scalar_t),
+            ACCESSOR(C, 3, scalar_t),
+            scale
+        );
+    }));
 
     // handle error
     //cudaDeviceSynchronize();
