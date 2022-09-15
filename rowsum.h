@@ -19,13 +19,14 @@ struct rowsum_accumulator {
     }
 
     __device__ void divide(scalar_t* smem, warp_tile_t& mma) {
-        if (threadIdx.x < N_tile) smem[threadIdx.x] = acc;
+        if (threadIdx.x < N_tile) smem[threadIdx.x] = 1.f / acc;
         __syncthreads();
 
+        #pragma unroll
         for (int i = 0; i < N_thread; i++) {
             acc = smem[i * N_warp + mma.thread_y];
             mma.rowwise(i, [&](scalar_t el) {
-                return el / acc;
+                return el * acc;
             });
         }
         __syncthreads();
