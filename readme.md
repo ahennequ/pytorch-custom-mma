@@ -1,13 +1,15 @@
-## Experiment with custom attention
+## Experiments with flash cosine similarity attention
+
+Main repo: https://github.com/lucidrains/flash-cosine-sim-attention
 
 ```python
-# C = exp(scale * (Q * K^T)) * V
+# O = softmax(scale * (Q * K^T) - scale) * V
 def plain_impl(Q: TensorType['b', 'i', 'd'],
                K: TensorType['b', 'j', 'd'],
                V: TensorType['b', 'j', 'd'],
                scale=8) -> TensorType['b', 'i', 'j']:
     C = einsum('... i d, ... j d -> ... i j', Q, K)
-    C = torch.exp(C * scale)
+    C = (C * scale - scale).softmax(dim = -1)
     O = einsum('... i j, ... j d -> ... i d', C, V)
     return O
 ```
@@ -32,14 +34,14 @@ slower: 0.733x   seq_len: 4096  fused kernel: 13.212    baseline: 18.014
 
 Current results on RTX2070:
 ```
-slower: 0.433x   seq_len: 64    fused kernel: 0.051     baseline: 0.118
-slower: 1.092x   seq_len: 128   fused kernel: 0.132     baseline: 0.120
-slower: 1.516x   seq_len: 256   fused kernel: 0.456     baseline: 0.301
-slower: 1.567x   seq_len: 512   fused kernel: 1.629     baseline: 1.039
-slower: 1.498x   seq_len: 1024  fused kernel: 5.687     baseline: 3.797
-slower: 1.452x   seq_len: 2048  fused kernel: 21.326    baseline: 14.690
-                 seq_len: 4096  fused kernel: 85.707    baseline: OOM
-                 seq_len: 8192  fused kernel: 365.019   baseline: OOM
+slower: 0.440x   seq_len: 64    fused kernel: 0.056     baseline: 0.127
+slower: 1.059x   seq_len: 128   fused kernel: 0.137     baseline: 0.130
+slower: 1.367x   seq_len: 256   fused kernel: 0.478     baseline: 0.350
+slower: 1.394x   seq_len: 512   fused kernel: 1.676     baseline: 1.202
+slower: 1.363x   seq_len: 1024  fused kernel: 6.353     baseline: 4.660
+slower: 1.193x   seq_len: 2048  fused kernel: 21.752    baseline: 18.237
+                 seq_len: 4096  fused kernel: 87.537    baseline: OOM
+                 seq_len: 8192  fused kernel: 371.620   baseline: OOM
 ```
 
 ## Building the image to run in HPC cluster

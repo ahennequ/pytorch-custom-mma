@@ -82,6 +82,15 @@ namespace mma {
             }
         }
 
+        // Perform a rowwise operation, specified by the given lambda, on C
+        template<typename F>
+        __device__ void rowwise(int row, F&& op) {
+            #pragma unroll
+            for (int i = 0; i < M_thread; i++) {
+                C_frag[row * M_thread + i] = op(C_frag[row * M_thread + i]);
+            }
+        }
+
         // Copy C from registers to shared memory
         __device__ void store(scalar_t* C_sm_ptr) {
             #pragma unroll

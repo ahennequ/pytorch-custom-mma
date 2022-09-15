@@ -77,13 +77,13 @@ def benchmark(
 
     return inner
 
-# C = exp(scale * (Q * K^T)) * V
+# O = softmax(scale * (Q * K^T) - scale) * V
 def plain_impl(Q: TensorType['b', 'i', 'd'],
                K: TensorType['b', 'j', 'd'],
                V: TensorType['b', 'j', 'd'],
                scale=8) -> TensorType['b', 'i', 'j']:
     C = einsum('... i d, ... j d -> ... i j', Q, K)
-    C = torch.exp(C * scale)
+    C = (C * scale - scale).softmax(dim = -1)
     O = einsum('... i j, ... j d -> ... i d', C, V)
     return O
 
@@ -92,15 +92,15 @@ import pytorch_custom_mma_cuda
 class MMACudaFunction(torch.autograd.Function):
     @staticmethod
     def forward(ctx, Q, K, V, scale=8):
-        C = pytorch_custom_mma_cuda.forward(Q, K, V, scale)[0]
-        ctx.save_for_backward(Q, K, V, C)
+        C, l = pytorch_custom_mma_cuda.forward(Q, K, V, scale)
+        ctx.save_for_backward(Q, K, V, C, l)
         return C
     @staticmethod
     def backward(ctx, grad_c):
-        #Q, K, V, C = ctx.saved_tensors # TODO
+        #Q, K, V, C, l = ctx.saved_tensors # TODO
         return None, None
 
-# C = exp(scale * (Q * K^T)) * V
+# O = softmax(scale * (Q * K^T) - scale) * V
 def cuda_impl(Q: TensorType['b', 'i', 'd'],
               K: TensorType['b', 'j', 'd'],
               V: TensorType['b', 'j', 'd'],
@@ -119,7 +119,7 @@ cuda_fn = benchmark(
     backwards = TEST_BACKWARDS
 )
 
-def allclose(a, b, atol = 1e-2):
+def allclose(a, b, atol = 1e-5):
     diff = (a - b).abs().amax()
     return diff <= atol
 
