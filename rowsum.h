@@ -6,7 +6,7 @@ struct rowsum_accumulator {
     static constexpr int N_warp   = warp_tile_t::N_warp;
     static constexpr int N_tile   = warp_tile_t::N_tile;
 
-    scalar_t acc;
+    float acc;
 
     __device__ void zero() {
         acc = 0;

@@ -34,7 +34,7 @@ __global__ void forward_kernel(
     const PackedAccessor<scalar_t, 3> V,
           PackedAccessor<scalar_t, 3> O,
           PackedAccessor<scalar_t, 2> l,
-    const scalar_t scale
+    const float scale
 ) {
     const int batch = blockIdx.y;
 

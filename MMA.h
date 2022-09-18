@@ -197,7 +197,7 @@ namespace mma {
             #if defined(__CUDA_ARCH__) && (__CUDA_ARCH__ == 700)
                 return (tid & 3) + ((tid & 4) << 1) + ((tid & 16) >> 2); // half
                 //return (tid & 16) / 4 + 2 * (tid & 4) + (tid & 1) + (i & 2); // float
-            #else*/
+            #else
                 return (i & 2) * 4 + tid / 4;
             #endif
         }
