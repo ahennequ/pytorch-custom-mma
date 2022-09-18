@@ -119,7 +119,7 @@ cuda_fn = benchmark(
     backwards = TEST_BACKWARDS
 )
 
-def allclose(a, b, atol = 1e-5):
+def allclose(a, b, atol = 1e-2):
     diff = (a - b).abs().amax()
     return diff <= atol
 
@@ -127,10 +127,10 @@ def l2norm(t):
     return F.normalize(t, dim = -1)
 
 for seq_len in TEST_SEQUENCE_LENGTHS:
-    Q = torch.randn(BATCH_SIZE, seq_len, DIM).cuda().requires_grad_()
-    K = torch.randn(BATCH_SIZE, seq_len, DIM).cuda().requires_grad_()
-    V = torch.randn(BATCH_SIZE, seq_len, DIM).cuda().requires_grad_()
-    #V = torch.ones(BATCH_SIZE, seq_len, DIM).cuda().requires_grad_()
+    Q = torch.randn(BATCH_SIZE, seq_len, DIM).half().cuda().requires_grad_()
+    K = torch.randn(BATCH_SIZE, seq_len, DIM).half().cuda().requires_grad_()
+    V = torch.randn(BATCH_SIZE, seq_len, DIM).half().cuda().requires_grad_()
+    #V = torch.ones(BATCH_SIZE, seq_len, DIM).half().cuda().requires_grad_()
 
     Q, K = map(l2norm, (Q, K))
 
@@ -140,7 +140,9 @@ for seq_len in TEST_SEQUENCE_LENGTHS:
         C_cuda  = cuda_impl(Q, K, V)
 
         #print(C_plain, C_plain.shape)
+        #torch.set_printoptions(profile="full")
         #print(C_cuda, C_cuda.shape)
+        #torch.set_printoptions(profile="default") # reset
         assert allclose(C_plain, C_cuda)
 
     # benchmark

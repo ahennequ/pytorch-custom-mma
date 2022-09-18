@@ -2,6 +2,7 @@
 #include <cuda_runtime.h>
 #include <cassert>
 #include <c10/cuda/CUDAGuard.h>
+#include <type_traits>
 
 #include <torch/extension.h>
 
@@ -33,7 +34,7 @@ __global__ void forward_kernel(
     const PackedAccessor<scalar_t, 3> V,
           PackedAccessor<scalar_t, 3> O,
           PackedAccessor<scalar_t, 2> l,
-    const float scale
+    const scalar_t scale
 ) {
     const int batch = blockIdx.y;
 
@@ -65,11 +66,11 @@ __global__ void forward_kernel(
 
         QK_mma.zero();
 
-        for (int d = 0; d < D; d++) {
+        for (int d = 0; d < D; d += mma::warp_tile<scalar_t>::K_tile) {
             QK_mma.mma(Q_sm.smem, K_sm.smem, d);
         }
 
-        QK_mma.pointwise([&](scalar_t el) {
+        QK_mma.pointwise([&](scalar_t el) -> scalar_t {
             return expf(scale * el - scale); 
         });
 
@@ -82,7 +83,7 @@ __global__ void forward_kernel(
 
         __syncthreads();
 
-        for (int j = 0; j < mma::warp_tile<scalar_t>::M_tile; j++) {
+        for (int j = 0; j < mma::warp_tile<scalar_t>::M_tile; j += mma::warp_tile<scalar_t>::K_tile) {
             out_mma.mma(C_sm.smem, K_sm.smem, j);
             L_acc.add(C_sm.smem, j);
         }

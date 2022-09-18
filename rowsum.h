@@ -6,7 +6,7 @@ struct rowsum_accumulator {
     static constexpr int N_warp   = warp_tile_t::N_warp;
     static constexpr int N_tile   = warp_tile_t::N_tile;
 
-    float acc;
+    scalar_t acc;
 
     __device__ void zero() {
         acc = 0;
@@ -14,7 +14,10 @@ struct rowsum_accumulator {
 
     __device__ void add(scalar_t* smem, int d) {
         if (threadIdx.x < N_tile) {
-            acc += smem[threadIdx.x + d * N_tile];
+            #pragma unroll
+            for (int i = 0; i < warp_tile_t::K_tile; i++) {
+                acc += smem[threadIdx.x + (d + i) * N_tile];
+            }
         }
     }
 
@@ -22,13 +25,9 @@ struct rowsum_accumulator {
         if (threadIdx.x < N_tile) smem[threadIdx.x] = 1.f / acc;
         __syncthreads();
 
-        #pragma unroll
-        for (int i = 0; i < N_thread; i++) {
-            acc = smem[i * N_warp + mma.thread_y];
-            mma.rowwise(i, [&](scalar_t el) {
-                return el * acc;
-            });
-        }
+        mma.rowwise([&](scalar_t el, int i) {
+            return el * smem[i];
+        });
         __syncthreads();
     }
 
