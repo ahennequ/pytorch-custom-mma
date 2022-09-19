@@ -67,14 +67,14 @@ __global__ void forward_kernel(
         QK_mma.zero();
 
         for (int d = 0; d < D; d += mma::warp_tile<scalar_t>::K_tile) {
-            QK_mma.mma(Q_sm.smem, K_sm.smem, d);
+            QK_mma.mma(Q_sm, K_sm, d);
         }
 
         QK_mma.pointwise([&](scalar_t el) -> scalar_t {
             return expf(scale * el - scale); 
         });
 
-        QK_mma.store_transpose(C_sm.smem);
+        QK_mma.store_transpose(C_sm);
 
         __syncthreads();
 
@@ -84,8 +84,8 @@ __global__ void forward_kernel(
         __syncthreads();
 
         for (int j = 0; j < mma::warp_tile<scalar_t>::M_tile; j += mma::warp_tile<scalar_t>::K_tile) {
-            out_mma.mma(C_sm.smem, K_sm.smem, j);
-            L_acc.add(C_sm.smem, j);
+            out_mma.mma(C_sm, K_sm, j);
+            L_acc.add(C_sm, j);
         }
 
         __syncthreads();
@@ -94,7 +94,7 @@ __global__ void forward_kernel(
     L_acc.store(l[batch], tile_y);
     L_acc.divide(C_sm.smem, out_mma);
 
-    out_mma.store(C_sm.smem);
+    out_mma.store(C_sm);
     __syncthreads();
 
     C_sm.store(O[batch], 0, tile_y);
@@ -121,9 +121,15 @@ std::vector<at::Tensor> mma_forward(
 
     AT_DISPATCH_FLOATING_TYPES_AND_HALF(Q.scalar_type(), "forward_cosine_sim_attention_forward", ([&] {
         const dim3 blocks(N / mma::warp_tile<scalar_t>::N_tile, batch);
-        const unsigned shared_mem_size = (mma::warp_tile<scalar_t>::N_tile * D +
-                                          mma::warp_tile<scalar_t>::M_tile * D +
-                                          mma::warp_tile<scalar_t>::N_tile * mma::warp_tile<scalar_t>::M_tile) * sizeof(scalar_t);
+        int padding = sizeof(scalar_t) == 2 ? 8 : 0;
+        const unsigned shared_mem_size = ((mma::warp_tile<scalar_t>::N_tile + padding) * D +
+                                          (mma::warp_tile<scalar_t>::M_tile + padding) * D +
+                                          (mma::warp_tile<scalar_t>::M_tile + padding) * mma::warp_tile<scalar_t>::N_tile) * sizeof(scalar_t);
+
+        // cudaDeviceProp deviceProp;
+        // cudaGetDeviceProperties(&deviceProp, 0);
+        // printf("%d %d / %d\n", padding, shared_mem_size, deviceProp.sharedMemPerBlock);
+
         forward_kernel<scalar_t><<<blocks, threads_per_block, shared_mem_size>>>(
             ACCESSOR(Q, 3, scalar_t),
             ACCESSOR(K, 3, scalar_t),
@@ -135,8 +141,8 @@ std::vector<at::Tensor> mma_forward(
     }));
 
     // handle error
-    //cudaDeviceSynchronize();
-    //CHECK_LAST_CUDA_ERROR();
+    cudaDeviceSynchronize();
+    CHECK_LAST_CUDA_ERROR();
 
     return { O, l };
 }

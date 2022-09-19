@@ -12,11 +12,12 @@ struct rowsum_accumulator {
         acc = 0;
     }
 
-    __device__ void add(scalar_t* smem, int d) {
+    template<typename shared_fragment>
+    __device__ void add(shared_fragment& smem, int d) {
         if (threadIdx.x < N_tile) {
             #pragma unroll
             for (int i = 0; i < warp_tile_t::K_tile; i++) {
-                acc += smem[threadIdx.x + (d + i) * N_tile];
+                acc += smem(threadIdx.x, d + i);
             }
         }
     }

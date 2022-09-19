@@ -126,29 +126,34 @@ def allclose(a, b, atol = 1e-2):
 def l2norm(t):
     return F.normalize(t, dim = -1)
 
-for seq_len in TEST_SEQUENCE_LENGTHS:
-    Q = torch.randn(BATCH_SIZE, seq_len, DIM).half().cuda().requires_grad_()
-    K = torch.randn(BATCH_SIZE, seq_len, DIM).half().cuda().requires_grad_()
-    V = torch.randn(BATCH_SIZE, seq_len, DIM).half().cuda().requires_grad_()
-    #V = torch.ones(BATCH_SIZE, seq_len, DIM).half().cuda().requires_grad_()
+def bench(dtype=torch.float32):
+    print("Benchmark", dtype)
+    for seq_len in TEST_SEQUENCE_LENGTHS:
+        Q = torch.randn(BATCH_SIZE, seq_len, DIM, dtype=dtype).cuda().requires_grad_()
+        K = torch.randn(BATCH_SIZE, seq_len, DIM, dtype=dtype).cuda().requires_grad_()
+        V = torch.randn(BATCH_SIZE, seq_len, DIM, dtype=dtype).cuda().requires_grad_()
+        #V = torch.ones(BATCH_SIZE, seq_len, DIM, dtype=dtype).cuda().requires_grad_()
 
-    Q, K = map(l2norm, (Q, K))
+        Q, K = map(l2norm, (Q, K))
 
-    if (seq_len <= 2048):
-        # assert correctness
-        C_plain = plain_impl(Q, K, V)
-        C_cuda  = cuda_impl(Q, K, V)
+        if (seq_len <= 2048):
+            # assert correctness
+            C_plain = plain_impl(Q, K, V)
+            C_cuda  = cuda_impl(Q, K, V)
 
-        #print(C_plain, C_plain.shape)
-        #torch.set_printoptions(profile="full")
-        #print(C_cuda, C_cuda.shape)
-        #torch.set_printoptions(profile="default") # reset
-        assert allclose(C_plain, C_cuda)
+            #print(C_plain, C_plain.shape)
+            #torch.set_printoptions(profile="full")
+            #print(C_cuda, C_cuda.shape)
+            #torch.set_printoptions(profile="default") # reset
+            assert allclose(C_plain, C_cuda)
 
-    # benchmark
-    fused_time = cuda_fn(Q, K, V)
-    baseline_time = plain_fn(Q, K, V) if seq_len <= 2048 else 10000
+        # benchmark
+        fused_time = cuda_fn(Q, K, V)
+        baseline_time = plain_fn(Q, K, V) if seq_len <= 2048 else 10000
 
-    times_slower = fused_time / baseline_time
+        times_slower = fused_time / baseline_time
 
-    print(f'slower: {times_slower:.3f}x\t seq_len: {seq_len}\tfused kernel: {fused_time:.3f}\tbaseline: {baseline_time:.3f}')
+        print(f'slower: {times_slower:.3f}x\t seq_len: {seq_len}\tfused kernel: {fused_time:.3f}\tbaseline: {baseline_time:.3f}')
+
+bench(dtype=torch.float32)
+bench(dtype=torch.float16)

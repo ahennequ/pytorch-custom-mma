@@ -53,17 +53,18 @@ namespace mma {
         }
 
         // Performs C = A * B + C
-        __device__ void mma(const scalar_t* A_sm_ptr, const scalar_t* B_sm_ptr, int k) {
+        template<typename shared_fragment>
+        __device__ void mma(shared_fragment& A_sm, shared_fragment& B_sm, int k) {
             // Load a N x 1 fragment of A from shared memory to registers:
             #pragma unroll
             for (int i = 0; i < N_thread; i++) {
-                A_frag[i] = A_sm_ptr[i * N_warp + thread_y + k * N_tile];
+                A_frag[i] = A_sm(i * N_warp + thread_y, k);
             }
 
             // Load a 1 x M fragment of B from shared memory to registers:
             #pragma unroll
             for (int i = 0; i < M_thread; i++) {
-                B_frag[i] = B_sm_ptr[i * M_warp + thread_x + k * M_tile];
+                B_frag[i] = B_sm(i * M_warp + thread_x, k);
             }
 
             // Compute:
@@ -99,24 +100,24 @@ namespace mma {
         }
 
         // Copy C from registers to shared memory
-        __device__ void store(scalar_t* C_sm_ptr) {
+        template<typename shared_fragment>
+        __device__ void store(shared_fragment& C_sm) {
             #pragma unroll
             for (int i = 0; i < N_thread; i++) {
                 #pragma unroll
                 for (int j = 0; j < M_thread ; j++) {
-                    C_sm_ptr[(thread_y + i * N_warp) * M_tile + j * M_warp + thread_x]
-                      = C_frag[i * M_thread + j];
+                    C_sm(j * M_warp + thread_x, i * N_warp + thread_y) = C_frag[i * M_thread + j];
                 }
             }
         }
 
-        __device__ void store_transpose(scalar_t* C_sm_ptr) {
+        template<typename shared_fragment>
+        __device__ void store_transpose(shared_fragment& C_sm) {
             #pragma unroll
             for (int i = 0; i < N_thread; i++) {
                 #pragma unroll
                 for (int j = 0; j < M_thread ; j++) {
-                    C_sm_ptr[thread_y + i * N_warp + (j * M_warp + thread_x) * N_tile]
-                      = C_frag[i * M_thread + j];
+                    C_sm(i * N_warp + thread_y, j * M_warp + thread_x) = C_frag[i * M_thread + j];
                 }
             }
         }
@@ -165,15 +166,16 @@ namespace mma {
         }
 
         // Performs C = A * B + C
-        __device__ void mma(const c10::Half* A_sm_ptr, const c10::Half* B_sm_ptr, int k) {
+        template<typename shared_fragment>
+        __device__ void mma(shared_fragment& A_sm, shared_fragment& B_sm, int k) {
             // Load a 1 x M fragment of B from shared memory to registers:
-            wmma::load_matrix_sync(B_frag, reinterpret_cast<const half*>(B_sm_ptr) + warp_x * M_warp + k * M_tile, M_tile);
+            wmma::load_matrix_sync(B_frag, reinterpret_cast<const half*>(&B_sm(warp_x * M_warp, k)), B_sm.stride);
 
             #pragma unroll
             for (int i = 0; i < N_thread; i++) {
                 // Load a N x 1 fragment of A from shared memory to registers:
                 int y = (warp_y * N_thread + i) * N_warp;
-                wmma::load_matrix_sync(A_frag, reinterpret_cast<const half*>(A_sm_ptr) + y + k * N_tile, N_tile);
+                wmma::load_matrix_sync(A_frag, reinterpret_cast<const half*>(&A_sm(y, k)), A_sm.stride);
 
                 // Compute:
                 wmma::mma_sync(C_frag[i], A_frag, B_frag, C_frag[i]);
@@ -226,19 +228,23 @@ namespace mma {
         }
 
         // Copy C from registers to shared memory
-        __device__ void store(c10::Half* C_sm_ptr) {
+        template<typename shared_fragment>
+        __device__ void store(shared_fragment& C_sm) {
             #pragma unroll
             for (int i = 0; i < N_thread; i++) {
+                int x = warp_x * M_warp;
                 int y = (warp_y * N_thread + i) * N_warp;
-                wmma::store_matrix_sync(reinterpret_cast<half*>(C_sm_ptr) + y * M_tile + warp_x * M_warp, C_frag[i], M_tile, wmma::mem_row_major);
+                wmma::store_matrix_sync(reinterpret_cast<half*>(&C_sm(x, y)), C_frag[i], C_sm.stride, wmma::mem_row_major);
             }
         }
 
-        __device__ void store_transpose(c10::Half* C_sm_ptr) {
+        template<typename shared_fragment>
+        __device__ void store_transpose(shared_fragment& C_sm) {
             #pragma unroll
             for (int i = 0; i < N_thread; i++) {
+                int x = warp_x * M_warp;
                 int y = (warp_y * N_thread + i) * N_warp;
-                wmma::store_matrix_sync(reinterpret_cast<half*>(C_sm_ptr) + y + warp_x * M_warp * N_tile, C_frag[i], N_tile, wmma::mem_col_major);
+                wmma::store_matrix_sync(reinterpret_cast<half*>(&C_sm(y, x)), C_frag[i], C_sm.stride, wmma::mem_col_major);
             }
         }
     };
