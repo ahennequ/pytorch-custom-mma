@@ -35,7 +35,7 @@ struct rowsum_accumulator {
     template<typename accessor>
     __device__ void store(accessor gmem, int tile_y) {
         if (threadIdx.x < N_tile) {
-            gmem[threadIdx.x + tile_y * N_tile] = acc;
+            gmem[threadIdx.x + tile_y] = acc;
         }
     }
 };

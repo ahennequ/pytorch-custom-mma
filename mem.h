@@ -9,23 +9,23 @@ namespace mem {
         int stride;
 
         __device__ shared_fragment(char* shared_base, int N, int M)
-          : smem(reinterpret_cast<T*>(shared_base)), N(N), M(M), stride(M + (sizeof(T) == 2 ? 8 : 0)) { }
+          : smem(reinterpret_cast<T*>(shared_base)), N(N), M(M), stride(M + (sizeof(T) == 2 ? 8 : 1)) { }
 
         template<typename accessor>
         __device__ void load(accessor gmem, int tile_x, int tile_y) {
             for (int i = threadIdx.x; i < N * M; i += blockDim.x) {
                 int x = i % M;
                 int y = i / M;
-                smem[y * stride + x] = gmem[y + tile_y * N][x + tile_x * M];
+                smem[y * stride + x] = gmem[y + tile_y][x + tile_x];
             }
         }
 
         template<typename accessor>
         __device__ void load_transpose(accessor gmem, int tile_x, int tile_y) {
             for (int i = threadIdx.x; i < N * M; i += blockDim.x) {
-                int y = i % M;
-                int x = i / M;
-                smem[y * stride + x] = gmem[x + tile_y * N][y + tile_x * M];
+                int x = i % N;
+                int y = i / N;
+                smem[x * stride + y] = gmem[y + tile_y][x + tile_x];
             }
         }
 
@@ -38,7 +38,7 @@ namespace mem {
             for (int i = threadIdx.x; i < N * M; i += blockDim.x) {
                 int x = i % M;
                 int y = i / M;
-                gmem[y + tile_y * N][x + tile_x * M] = smem[y * stride + x];
+                gmem[y + tile_y][x + tile_x] = smem[y * stride + x];
             }
         }
 

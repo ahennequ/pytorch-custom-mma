@@ -20,9 +20,6 @@ torch.manual_seed(0)
 # constants
 TEST_SEQUENCE_LENGTHS = [64, 128, 256, 512, 1024, 2048, 4096, 8192]
 
-BATCH_SIZE = 32
-DIM = 64
-
 TEST_FORWARDS = not args.only_backwards
 TEST_BACKWARDS = not args.only_forwards
 
@@ -126,13 +123,15 @@ def allclose(a, b, atol = 1e-2):
 def l2norm(t):
     return F.normalize(t, dim = -1)
 
-def bench(dtype=torch.float32):
-    print("Benchmark", dtype)
+def bench(batch_size=32, head_dim=64, v_dim=64, dtype=torch.float32):
+    print("-" * 80)
+    print(f'batch: {batch_size}\thead dim: {head_dim}\tV dim: {v_dim}\t\tdtype: {dtype}')
+    print("-" * 80)
     for seq_len in TEST_SEQUENCE_LENGTHS:
-        Q = torch.randn(BATCH_SIZE, seq_len, DIM, dtype=dtype).cuda().requires_grad_()
-        K = torch.randn(BATCH_SIZE, seq_len, DIM, dtype=dtype).cuda().requires_grad_()
-        V = torch.randn(BATCH_SIZE, seq_len, DIM, dtype=dtype).cuda().requires_grad_()
-        #V = torch.ones(BATCH_SIZE, seq_len, DIM, dtype=dtype).cuda().requires_grad_()
+        Q = torch.randn(batch_size, seq_len, head_dim, dtype=dtype).cuda().requires_grad_()
+        K = torch.randn(batch_size, seq_len, head_dim, dtype=dtype).cuda().requires_grad_()
+        V = torch.randn(batch_size, seq_len, v_dim, dtype=dtype).cuda().requires_grad_()
+        #V = torch.ones(batch_size, seq_len, v_dim, dtype=dtype).cuda().requires_grad_()
 
         Q, K = map(l2norm, (Q, K))
 
@@ -149,11 +148,16 @@ def bench(dtype=torch.float32):
 
         # benchmark
         fused_time = cuda_fn(Q, K, V)
-        baseline_time = plain_fn(Q, K, V) if seq_len <= 2048 else 10000
+        try:
+            baseline_time = plain_fn(Q, K, V)
+        except:
+            torch.cuda.empty_cache()
+            baseline_time = -1
 
-        times_slower = fused_time / baseline_time
+        times_slower = (fused_time / baseline_time) if baseline_time != -1 else 0.
+        baseline_time_str = '      OOM' if baseline_time == -1 else f"{baseline_time:7.3f}ms"
 
-        print(f'slower: {times_slower:.3f}x\t seq_len: {seq_len}\tfused kernel: {fused_time:.3f}\tbaseline: {baseline_time:.3f}')
+        print(f'seq_len: {seq_len}\tslower: {times_slower:.2f}x\tkernel: {fused_time:7.3f}ms\tbaseline: {baseline_time_str}')
 
 bench(dtype=torch.float32)
 bench(dtype=torch.float16)

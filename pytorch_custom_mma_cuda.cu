@@ -42,8 +42,7 @@ __global__ void forward_kernel(
     const int M = K.size(1);
     const int D = Q.size(2);
 
-    const int tile_w = M / mma::warp_tile<scalar_t>::M_tile;
-    const int tile_y = blockIdx.x;
+    const int tile_y = blockIdx.x * mma::warp_tile<scalar_t>::N_tile;
 
     extern __shared__ char _shared_mem[];
 
@@ -51,23 +50,23 @@ __global__ void forward_kernel(
     mma::warp_tile<scalar_t> out_mma;
     rowsum_accumulator<scalar_t, mma::warp_tile<scalar_t>> L_acc;
     
-    mem::shared_fragment<scalar_t> Q_sm{_shared_mem, D, mma::warp_tile<scalar_t>::N_tile};
-    mem::shared_fragment<scalar_t> K_sm{Q_sm.next(), D, mma::warp_tile<scalar_t>::M_tile};
+    mem::shared_fragment<scalar_t> Q_sm{_shared_mem, 16, mma::warp_tile<scalar_t>::N_tile};
+    mem::shared_fragment<scalar_t> K_sm{Q_sm.next(), 16, mma::warp_tile<scalar_t>::M_tile};
     mem::shared_fragment<scalar_t> C_sm{K_sm.next(), mma::warp_tile<scalar_t>::N_tile, mma::warp_tile<scalar_t>::M_tile};
 
     out_mma.zero();
     L_acc.zero();
 
-    Q_sm.load_transpose(Q[batch], 0, tile_y);
-    for (int tile_x = 0; tile_x < tile_w; tile_x++) {
-        K_sm.load_transpose(K[batch], 0, tile_x);
-
-        __syncthreads();
-
+    for (int tile_x = 0; tile_x < M; tile_x += mma::warp_tile<scalar_t>::M_tile) {
         QK_mma.zero();
 
-        for (int d = 0; d < D; d += mma::warp_tile<scalar_t>::K_tile) {
-            QK_mma.mma(Q_sm, K_sm, d);
+        for (int k = 0; k < D; k += K_sm.N) {
+            Q_sm.load_transpose(Q[batch], k, tile_y);
+            K_sm.load_transpose(K[batch], k, tile_x);
+            __syncthreads();
+
+            QK_mma.mma(Q_sm, K_sm, 0, 0, K_sm.N);
+            __syncthreads();
         }
 
         QK_mma.pointwise([&](scalar_t el) -> scalar_t {
@@ -78,17 +77,18 @@ __global__ void forward_kernel(
 
         __syncthreads();
 
-        // Second matmul:
-        K_sm.load(V[batch], 0, tile_x); // reuse K shared mem for V
-
-        __syncthreads();
-
         for (int j = 0; j < mma::warp_tile<scalar_t>::M_tile; j += mma::warp_tile<scalar_t>::K_tile) {
-            out_mma.mma(C_sm, K_sm, j);
             L_acc.add(C_sm, j);
         }
 
-        __syncthreads();
+        // Second matmul:
+        for (int k = 0; k < mma::warp_tile<scalar_t>::M_tile; k += K_sm.N) {
+            K_sm.load(V[batch], 0, tile_x + k); // reuse K shared mem for V
+            __syncthreads();
+
+            out_mma.mma(C_sm, K_sm, k, 0, K_sm.N);
+            __syncthreads();
+        }
     }
 
     L_acc.store(l[batch], tile_y);
@@ -111,19 +111,20 @@ std::vector<at::Tensor> mma_forward(
     const int batch = Q.size(0);
     const int N = Q.size(1);
     const int M = K.size(1);
-    const int D = Q.size(2);
+    const int QK_dim = Q.size(2);
+    const int V_dim = V.size(2);
 
     auto options = torch::TensorOptions().device(device_of(Q)).dtype(Q.scalar_type());
-    auto O = at::empty({batch, N, D}, options);
+    auto O = at::empty({batch, N, V_dim}, options);
     auto l = at::empty({batch, N}, options);
 
     const dim3 threads_per_block(256);
 
     AT_DISPATCH_FLOATING_TYPES_AND_HALF(Q.scalar_type(), "forward_cosine_sim_attention_forward", ([&] {
         const dim3 blocks(N / mma::warp_tile<scalar_t>::N_tile, batch);
-        int padding = sizeof(scalar_t) == 2 ? 8 : 0;
-        const unsigned shared_mem_size = ((mma::warp_tile<scalar_t>::N_tile + padding) * D +
-                                          (mma::warp_tile<scalar_t>::M_tile + padding) * D +
+        int padding = sizeof(scalar_t) == 2 ? 8 : 1;
+        const unsigned shared_mem_size = ((mma::warp_tile<scalar_t>::N_tile + padding) * 16 +
+                                          (mma::warp_tile<scalar_t>::M_tile + padding) * 16 +
                                           (mma::warp_tile<scalar_t>::M_tile + padding) * mma::warp_tile<scalar_t>::N_tile) * sizeof(scalar_t);
 
         // cudaDeviceProp deviceProp;

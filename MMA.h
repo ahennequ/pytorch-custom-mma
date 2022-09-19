@@ -54,25 +54,27 @@ namespace mma {
 
         // Performs C = A * B + C
         template<typename shared_fragment>
-        __device__ void mma(shared_fragment& A_sm, shared_fragment& B_sm, int k) {
-            // Load a N x 1 fragment of A from shared memory to registers:
-            #pragma unroll
-            for (int i = 0; i < N_thread; i++) {
-                A_frag[i] = A_sm(i * N_warp + thread_y, k);
-            }
-
-            // Load a 1 x M fragment of B from shared memory to registers:
-            #pragma unroll
-            for (int i = 0; i < M_thread; i++) {
-                B_frag[i] = B_sm(i * M_warp + thread_x, k);
-            }
-
-            // Compute:
-            #pragma unroll
-            for (int i = 0; i < N_thread; i++) {
+        __device__ void mma(shared_fragment& A_sm, shared_fragment& B_sm, int ka0, int kb0, int D) {
+            for (int k = 0; k < D; k += K_tile) {
+                // Load a N x 1 fragment of A from shared memory to registers:
                 #pragma unroll
-                for (int j = 0; j < M_thread ; j++) {
-                    C_frag[i * M_thread + j] += A_frag[i] * B_frag[j];
+                for (int i = 0; i < N_thread; i++) {
+                    A_frag[i] = A_sm(i * N_warp + thread_y, ka0 + k);
+                }
+
+                // Load a 1 x M fragment of B from shared memory to registers:
+                #pragma unroll
+                for (int i = 0; i < M_thread; i++) {
+                    B_frag[i] = B_sm(i * M_warp + thread_x, kb0 + k);
+                }
+
+                // Compute:
+                #pragma unroll
+                for (int i = 0; i < N_thread; i++) {
+                    #pragma unroll
+                    for (int j = 0; j < M_thread ; j++) {
+                        C_frag[i * M_thread + j] += A_frag[i] * B_frag[j];
+                    }
                 }
             }
         }
@@ -167,18 +169,20 @@ namespace mma {
 
         // Performs C = A * B + C
         template<typename shared_fragment>
-        __device__ void mma(shared_fragment& A_sm, shared_fragment& B_sm, int k) {
-            // Load a 1 x M fragment of B from shared memory to registers:
-            wmma::load_matrix_sync(B_frag, reinterpret_cast<const half*>(&B_sm(warp_x * M_warp, k)), B_sm.stride);
+        __device__ void mma(shared_fragment& A_sm, shared_fragment& B_sm, int ka0, int kb0, int D) {
+            for (int k = 0; k < D; k += K_tile) {
+                // Load a 1 x M fragment of B from shared memory to registers:
+                wmma::load_matrix_sync(B_frag, reinterpret_cast<const half*>(&B_sm(warp_x * M_warp, kb0 + k)), B_sm.stride);
 
-            #pragma unroll
-            for (int i = 0; i < N_thread; i++) {
-                // Load a N x 1 fragment of A from shared memory to registers:
-                int y = (warp_y * N_thread + i) * N_warp;
-                wmma::load_matrix_sync(A_frag, reinterpret_cast<const half*>(&A_sm(y, k)), A_sm.stride);
+                #pragma unroll
+                for (int i = 0; i < N_thread; i++) {
+                    // Load a N x 1 fragment of A from shared memory to registers:
+                    int y = (warp_y * N_thread + i) * N_warp;
+                    wmma::load_matrix_sync(A_frag, reinterpret_cast<const half*>(&A_sm(y, ka0 + k)), A_sm.stride);
 
-                // Compute:
-                wmma::mma_sync(C_frag[i], A_frag, B_frag, C_frag[i]);
+                    // Compute:
+                    wmma::mma_sync(C_frag[i], A_frag, B_frag, C_frag[i]);
+                }
             }
         }
 
