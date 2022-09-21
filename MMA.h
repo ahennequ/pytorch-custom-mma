@@ -25,8 +25,6 @@ namespace mma {
         static constexpr int K_tile = 1;
 
         // Registers:
-        float A_frag[N_thread];            // N x 1 fragment
-        float B_frag[M_thread];            // 1 x M fragment
         float C_frag[N_thread * M_thread]; // N x M fragment
 
         int warp_x;   // x offset of the warp within the block tile
@@ -53,8 +51,11 @@ namespace mma {
         }
 
         // Performs C = A * B + C
-        template<typename shared_fragment>
-        __device__ void mma(shared_fragment& A_sm, shared_fragment& B_sm, int ka0, int kb0, int D) {
+        template<typename fragA, typename fragB>
+        __device__ void mma(fragA& A_sm, fragB& B_sm, int ka0, int kb0, int D) {
+            float A_frag[N_thread]; // N x 1 fragment
+            float B_frag[M_thread]; // 1 x M fragment
+            
             for (int k = 0; k < D; k += K_tile) {
                 // Load a N x 1 fragment of A from shared memory to registers:
                 #pragma unroll
@@ -83,20 +84,12 @@ namespace mma {
         template<typename F>
         __device__ void pointwise(F&& op) {
             #pragma unroll
-            for (int i = 0; i < N_thread * M_thread; i++) {
-                C_frag[i] = op(C_frag[i]);
-            }
-        }
-
-        // Perform a rowwise operation, specified by the given lambda, on C
-        template<typename F>
-        __device__ void rowwise(F&& op) {
-            #pragma unroll
             for (int i = 0; i < N_thread; i++) {
                 int row = i * N_warp + thread_y;
                 #pragma unroll
                 for (int j = 0; j < M_thread; j++) {
-                    C_frag[i * M_thread + j] = op(C_frag[i * M_thread + j], row);
+                    int col = j * M_warp  + thread_x;
+                    C_frag[i * M_thread + j] = op(C_frag[i * M_thread + j], col, row);
                 }
             }
         }
@@ -146,9 +139,7 @@ namespace mma {
         static constexpr int K_tile = 16;
 
         // Registers:
-        wmma::fragment<wmma::matrix_a, 16, 16, 16, half, wmma::col_major> A_frag;
-        wmma::fragment<wmma::matrix_b, 16, 16, 16, half, wmma::row_major> B_frag;
-        wmma::fragment<wmma::accumulator, 16, 16, 16, half> C_frag[N_thread];
+        wmma::fragment<wmma::accumulator, 16, 16, 16, half> C_frag[N_thread * M_thread];
 
         int warp_x;   // x offset of the warp within the block tile
         int warp_y;   // y offset of the warp within the block tile
@@ -168,8 +159,11 @@ namespace mma {
         }
 
         // Performs C = A * B + C
-        template<typename shared_fragment>
-        __device__ void mma(shared_fragment& A_sm, shared_fragment& B_sm, int ka0, int kb0, int D) {
+        template<typename fragA, typename fragB>
+        __device__ void mma(fragA& A_sm, fragB& B_sm, int ka0, int kb0, int D) {
+            wmma::fragment<wmma::matrix_a, 16, 16, 16, half, wmma::col_major> A_frag;
+            wmma::fragment<wmma::matrix_b, 16, 16, 16, half, wmma::row_major> B_frag;
+
             for (int k = 0; k < D; k += K_tile) {
                 // Load a 1 x M fragment of B from shared memory to registers:
                 wmma::load_matrix_sync(B_frag, reinterpret_cast<const half*>(&B_sm(warp_x * M_warp, kb0 + k)), B_sm.stride);
@@ -193,7 +187,9 @@ namespace mma {
             for (int i = 0; i < N_thread; i++) {
                 #pragma unroll
                 for (int j = 0; j < C_frag[i].num_elements; j++) {
-                    C_frag[i].x[j] = op(C_frag[i].x[j]);
+                    int col = getWarpCol(j) + warp_x * 16;
+                    int row = getWarpRow(j) + i * 16 + warp_y * 32;
+                    C_frag[i].x[j] = op(C_frag[i].x[j], col, row);
                 }
             }
         }
@@ -218,27 +214,17 @@ namespace mma {
             #endif
         }
 
-        // Perform a rowwise operation, specified by the given lambda, on C
-        template<typename F>
-        __device__ void rowwise(F&& op) {
-            #pragma unroll
-            for (int i = 0; i < N_thread; i++) {
-                #pragma unroll
-                for (int j = 0; j < C_frag[i].num_elements; j++) {
-                    int row = getWarpRow(j) + i * 16 + warp_y * 32;
-                    C_frag[i].x[j] = op(C_frag[i].x[j], row);
-                }
-            }
-        }
-
         // Copy C from registers to shared memory
         template<typename shared_fragment>
         __device__ void store(shared_fragment& C_sm) {
             #pragma unroll
             for (int i = 0; i < N_thread; i++) {
-                int x = warp_x * M_warp;
                 int y = (warp_y * N_thread + i) * N_warp;
-                wmma::store_matrix_sync(reinterpret_cast<half*>(&C_sm(x, y)), C_frag[i], C_sm.stride, wmma::mem_row_major);
+                #pragma unroll
+                for (int j = 0; j < M_thread; j++) {
+                    int x = (warp_x * M_thread + j) * M_warp;
+                    wmma::store_matrix_sync(reinterpret_cast<half*>(&C_sm(x, y)), C_frag[i * M_thread + j], shared_fragment::stride, wmma::mem_row_major);
+                }
             }
         }
 
@@ -246,9 +232,12 @@ namespace mma {
         __device__ void store_transpose(shared_fragment& C_sm) {
             #pragma unroll
             for (int i = 0; i < N_thread; i++) {
-                int x = warp_x * M_warp;
                 int y = (warp_y * N_thread + i) * N_warp;
-                wmma::store_matrix_sync(reinterpret_cast<half*>(&C_sm(y, x)), C_frag[i], C_sm.stride, wmma::mem_col_major);
+                #pragma unroll
+                for (int j = 0; j < M_thread; j++) {
+                    int x = (warp_x * M_thread + j) * M_warp;
+                    wmma::store_matrix_sync(reinterpret_cast<half*>(&C_sm(y, x)), C_frag[i * M_thread + j], shared_fragment::stride, wmma::mem_col_major);
+                }
             }
         }
     };

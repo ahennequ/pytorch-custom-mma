@@ -1,15 +1,17 @@
 #pragma once
 
 namespace mem {
-    template<typename T>
+    template<typename T, int N_tile, int M_tile>
     struct shared_fragment {
+        static constexpr int N = N_tile;
+        static constexpr int M = M_tile;
+        static constexpr int stride = M + (sizeof(T) == 2 ? 8 : 1);
+        static constexpr int size = N * stride;
+        
         T* smem;
-        int N;
-        int M;
-        int stride;
 
-        __device__ shared_fragment(char* shared_base, int N, int M)
-          : smem(reinterpret_cast<T*>(shared_base)), N(N), M(M), stride(M + (sizeof(T) == 2 ? 8 : 1)) { }
+        __device__ shared_fragment(char* shared_base)
+          : smem(reinterpret_cast<T*>(shared_base)) { }
 
         template<typename accessor>
         __device__ void load(accessor gmem, int tile_x, int tile_y) {
@@ -42,12 +44,8 @@ namespace mem {
             }
         }
 
-        __device__ unsigned size() {
-            return N * stride;
-        }
-
         __device__ char* next() {
-            return reinterpret_cast<char*>(smem + size());
+            return reinterpret_cast<char*>(smem + size);
         }
     };
 } // namespace mem

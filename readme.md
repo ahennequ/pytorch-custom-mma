@@ -18,7 +18,7 @@ Implements ideas from https://developer.nvidia.com/blog/cutlass-linear-algebra-c
 
 The goal is to match pytorch performance while keeping the cuda code simple to understand.
 
-Current results on RTX2070:
+Results on RTX2070:
 ```
 --------------------------------------------------------------------------------
 batch: 32       head dim: 64    V dim: 64               dtype: torch.float32
@@ -44,18 +44,34 @@ seq_len: 4096   slower: 0.82x   kernel:  27.829ms       baseline:  34.134ms
 seq_len: 8192   slower: 0.00x   kernel: 109.877ms       baseline:       OOM
 ```
 
-Results on A100 (old):
+Results on A100:
 ```
-slower: 0.320x   seq_len: 64    fused kernel: 0.048     baseline: 0.152
-slower: 0.352x   seq_len: 128   fused kernel: 0.053     baseline: 0.152
-slower: 0.574x   seq_len: 256   fused kernel: 0.123     baseline: 0.215
-slower: 0.673x   seq_len: 512   fused kernel: 0.303     baseline: 0.450
-slower: 0.746x   seq_len: 1024  fused kernel: 0.960     baseline: 1.288
-slower: 0.793x   seq_len: 2048  fused kernel: 3.616     baseline: 4.562
-slower: 0.733x   seq_len: 4096  fused kernel: 13.212    baseline: 18.014
-                 seq_len: 8192  fused kernel: 51.390    baseline: OOM
-                 seq_len: 16384 fused kernel: 202.860   baseline: OOM
-                 seq_len: 32768 fused kernel: 815.142   baseline: OOM
+--------------------------------------------------------------------------------
+batch: 32       head dim: 64    V dim: 64               dtype: torch.float32
+--------------------------------------------------------------------------------
+seq_len: 64     slower: 0.50x   kernel:   0.082ms       baseline:   0.165ms
+seq_len: 128    slower: 0.56x   kernel:   0.092ms       baseline:   0.164ms
+seq_len: 256    slower: 0.88x   kernel:   0.160ms       baseline:   0.182ms
+seq_len: 512    slower: 0.65x   kernel:   0.325ms       baseline:   0.496ms
+seq_len: 1024   slower: 0.73x   kernel:   1.084ms       baseline:   1.489ms
+seq_len: 2048   slower: 0.63x   kernel:   3.362ms       baseline:   5.371ms
+seq_len: 4096   slower: 0.57x   kernel:  12.065ms       baseline:  21.270ms
+seq_len: 8192   slower: 0.00x   kernel:  46.413ms       baseline:       OOM
+seq_len: 16384  slower: 0.00x   kernel: 180.894ms       baseline:       OOM
+seq_len: 32768  slower: 0.00x   kernel: 744.898ms       baseline:       OOM
+--------------------------------------------------------------------------------
+batch: 32       head dim: 64    V dim: 64               dtype: torch.float16
+--------------------------------------------------------------------------------
+seq_len: 64     slower: 0.41x   kernel:   0.066ms       baseline:   0.160ms
+seq_len: 128    slower: 0.38x   kernel:   0.077ms       baseline:   0.201ms
+seq_len: 256    slower: 0.63x   kernel:   0.102ms       baseline:   0.161ms
+seq_len: 512    slower: 1.05x   kernel:   0.170ms       baseline:   0.162ms
+seq_len: 1024   slower: 0.71x   kernel:   0.372ms       baseline:   0.521ms
+seq_len: 2048   slower: 0.77x   kernel:   1.427ms       baseline:   1.851ms
+seq_len: 4096   slower: 0.69x   kernel:   4.944ms       baseline:   7.167ms
+seq_len: 8192   slower: 0.63x   kernel:  18.202ms       baseline:  29.042ms
+seq_len: 16384  slower: 0.00x   kernel:  68.439ms       baseline:       OOM
+seq_len: 32768  slower: 0.00x   kernel: 262.238ms       baseline:       OOM
 ```
 
 ## Building the image to run in HPC cluster

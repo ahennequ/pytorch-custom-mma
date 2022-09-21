@@ -6,6 +6,7 @@
 
 #include <torch/extension.h>
 
+#include "dispatch.h"
 #include "MMA.h"
 #include "mem.h"
 #include "rowsum.h"
@@ -40,53 +41,57 @@ __global__ void forward_kernel(
 
     const int N = Q.size(1);
     const int M = K.size(1);
-    const int D = Q.size(2);
+    const int QK_dim = Q.size(2);
 
-    const int tile_y = blockIdx.x * mma::warp_tile<scalar_t>::N_tile;
+    using QK_mma_t  = mma::warp_tile<scalar_t>;
+    using out_mma_t = mma::warp_tile<scalar_t>;
 
-    extern __shared__ char _shared_mem[];
+    using Q_sm_t = mem::shared_fragment<scalar_t, 16, QK_mma_t::N_tile>;
+    using K_sm_t = mem::shared_fragment<scalar_t, 16, QK_mma_t::M_tile>;
+    using C_sm_t = mem::shared_fragment<scalar_t, QK_mma_t::N_tile, QK_mma_t::M_tile>;
 
-    mma::warp_tile<scalar_t> QK_mma; // 32x16 tile per warp in registers -> process 64x64 with the block
-    mma::warp_tile<scalar_t> out_mma;
-    rowsum_accumulator<scalar_t, mma::warp_tile<scalar_t>> L_acc;
+    const int tile_y = blockIdx.x * QK_mma_t::N_tile;
+
+    __shared__ scalar_t _shared_mem[Q_sm_t::size + K_sm_t::size + C_sm_t::size];
+
+    QK_mma_t  QK_mma; // 32x16 tile per warp in registers -> process 64x64 with the block
+    out_mma_t out_mma;
+    rowsum_accumulator<scalar_t, QK_mma_t> L_acc;
     
-    mem::shared_fragment<scalar_t> Q_sm{_shared_mem, 16, mma::warp_tile<scalar_t>::N_tile};
-    mem::shared_fragment<scalar_t> K_sm{Q_sm.next(), 16, mma::warp_tile<scalar_t>::M_tile};
-    mem::shared_fragment<scalar_t> C_sm{K_sm.next(), mma::warp_tile<scalar_t>::N_tile, mma::warp_tile<scalar_t>::M_tile};
+    Q_sm_t Q_sm{reinterpret_cast<char*>(_shared_mem)};
+    K_sm_t K_sm{Q_sm.next()};
+    C_sm_t C_sm{K_sm.next()};
 
     out_mma.zero();
     L_acc.zero();
 
-    for (int tile_x = 0; tile_x < M; tile_x += mma::warp_tile<scalar_t>::M_tile) {
+    for (int tile_x = 0; tile_x < M; tile_x += QK_mma_t::M_tile) {
         QK_mma.zero();
 
-        for (int k = 0; k < D; k += K_sm.N) {
+        for (int k = 0; k < QK_dim; k += K_sm_t::N) {
             Q_sm.load_transpose(Q[batch], k, tile_y);
             K_sm.load_transpose(K[batch], k, tile_x);
             __syncthreads();
 
-            QK_mma.mma(Q_sm, K_sm, 0, 0, K_sm.N);
+            QK_mma.mma(Q_sm, K_sm, 0, 0, K_sm_t::N);
             __syncthreads();
         }
 
-        QK_mma.pointwise([&](scalar_t el) -> scalar_t {
+        QK_mma.pointwise([&](scalar_t el, int, int) -> scalar_t {
             return expf(scale * el - scale); 
         });
 
         QK_mma.store_transpose(C_sm);
-
         __syncthreads();
 
-        for (int j = 0; j < mma::warp_tile<scalar_t>::M_tile; j += mma::warp_tile<scalar_t>::K_tile) {
-            L_acc.add(C_sm, j);
-        }
+        L_acc.add(C_sm);
 
         // Second matmul:
-        for (int k = 0; k < mma::warp_tile<scalar_t>::M_tile; k += K_sm.N) {
+        for (int k = 0; k < QK_mma_t::M_tile; k += K_sm_t::N) {
             K_sm.load(V[batch], 0, tile_x + k); // reuse K shared mem for V
             __syncthreads();
 
-            out_mma.mma(C_sm, K_sm, k, 0, K_sm.N);
+            out_mma.mma(C_sm, K_sm, k, 0, K_sm_t::N);
             __syncthreads();
         }
     }
@@ -120,26 +125,19 @@ std::vector<at::Tensor> mma_forward(
 
     const dim3 threads_per_block(256);
 
-    AT_DISPATCH_FLOATING_TYPES_AND_HALF(Q.scalar_type(), "forward_cosine_sim_attention_forward", ([&] {
-        const dim3 blocks(N / mma::warp_tile<scalar_t>::N_tile, batch);
-        int padding = sizeof(scalar_t) == 2 ? 8 : 1;
-        const unsigned shared_mem_size = ((mma::warp_tile<scalar_t>::N_tile + padding) * 16 +
-                                          (mma::warp_tile<scalar_t>::M_tile + padding) * 16 +
-                                          (mma::warp_tile<scalar_t>::M_tile + padding) * mma::warp_tile<scalar_t>::N_tile) * sizeof(scalar_t);
-
-        // cudaDeviceProp deviceProp;
-        // cudaGetDeviceProperties(&deviceProp, 0);
-        // printf("%d %d / %d\n", padding, shared_mem_size, deviceProp.sharedMemPerBlock);
-
-        forward_kernel<scalar_t><<<blocks, threads_per_block, shared_mem_size>>>(
-            ACCESSOR(Q, 3, scalar_t),
-            ACCESSOR(K, 3, scalar_t),
-            ACCESSOR(V, 3, scalar_t),
-            ACCESSOR(O, 3, scalar_t),
-            ACCESSOR(l, 2, scalar_t),
-            scale
-        );
-    }));
+    AT_TYPE_DISPATCH_SWITCH(Q.scalar_type(), scalar_t, (at::ScalarType::Float, at::ScalarType::Half), (
+        VALUE_DISPATCH_SWITCH(V_dim, out_dim, (64), (
+            const dim3 blocks(N / mma::warp_tile<scalar_t>::N_tile, batch);
+            forward_kernel<scalar_t><<<blocks, threads_per_block>>>(
+                ACCESSOR(Q, 3, scalar_t),
+                ACCESSOR(K, 3, scalar_t),
+                ACCESSOR(V, 3, scalar_t),
+                ACCESSOR(O, 3, scalar_t),
+                ACCESSOR(l, 2, scalar_t),
+                scale
+            );
+        ), ())
+    ), ())
 
     // handle error
     cudaDeviceSynchronize();

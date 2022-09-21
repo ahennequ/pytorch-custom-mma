@@ -2,9 +2,8 @@
 
 template <typename scalar_t, typename warp_tile_t>
 struct rowsum_accumulator {
-    static constexpr int N_thread = warp_tile_t::N_thread;
-    static constexpr int N_warp   = warp_tile_t::N_warp;
-    static constexpr int N_tile   = warp_tile_t::N_tile;
+    static constexpr int N_tile = warp_tile_t::N_tile;
+    static constexpr int M_tile = warp_tile_t::M_tile;
 
     float acc;
 
@@ -13,11 +12,11 @@ struct rowsum_accumulator {
     }
 
     template<typename shared_fragment>
-    __device__ void add(shared_fragment& smem, int d) {
+    __device__ void add(shared_fragment& smem) {
         if (threadIdx.x < N_tile) {
             #pragma unroll
-            for (int i = 0; i < warp_tile_t::K_tile; i++) {
-                acc += smem(threadIdx.x, d + i);
+            for (int i = 0; i < M_tile; i++) {
+                acc += smem(threadIdx.x, i);
             }
         }
     }
@@ -26,8 +25,8 @@ struct rowsum_accumulator {
         if (threadIdx.x < N_tile) smem[threadIdx.x] = 1.f / acc;
         __syncthreads();
 
-        mma.rowwise([&](scalar_t el, int i) {
-            return el * smem[i];
+        mma.pointwise([&](scalar_t el, int, int y) {
+            return el * smem[y];
         });
         __syncthreads();
     }
