@@ -28,7 +28,7 @@ void check(const char* file, const int line) {
 template <typename scalar_t, int dims>
 using PackedAccessor = torch::PackedTensorAccessor32<scalar_t, dims, torch::RestrictPtrTraits>;
 
-template <typename scalar_t>
+template <typename scalar_t, int out_dim>
 __global__ void forward_kernel(
     const PackedAccessor<scalar_t, 3> Q,
     const PackedAccessor<scalar_t, 3> K,
@@ -43,8 +43,8 @@ __global__ void forward_kernel(
     const int M = K.size(1);
     const int QK_dim = Q.size(2);
 
-    using QK_mma_t  = mma::warp_tile<scalar_t>;
-    using out_mma_t = mma::warp_tile<scalar_t>;
+    using QK_mma_t  = mma::warp_tile<scalar_t, 64, 64>;
+    using out_mma_t = mma::warp_tile<scalar_t, 64, out_dim>;
 
     using Q_sm_t = mem::shared_fragment<scalar_t, 16, QK_mma_t::N_tile>;
     using K_sm_t = mem::shared_fragment<scalar_t, 16, QK_mma_t::M_tile>;
@@ -69,7 +69,7 @@ __global__ void forward_kernel(
         QK_mma.zero();
 
         for (int k = 0; k < QK_dim; k += K_sm_t::N) {
-            Q_sm.load_transpose(Q[batch], k, tile_y);
+            Q_sm.load_transpose(Q[batch], k, tile_y); // TODO: reload only if needed (if head_dim=16, no reload)
             K_sm.load_transpose(K[batch], k, tile_x);
             __syncthreads();
 
@@ -99,10 +99,7 @@ __global__ void forward_kernel(
     L_acc.store(l[batch], tile_y);
     L_acc.divide(C_sm.smem, out_mma);
 
-    out_mma.store(C_sm);
-    __syncthreads();
-
-    C_sm.store(O[batch], 0, tile_y);
+    out_mma.store(O[batch], C_sm, 0, tile_y);
 }
 
 std::vector<at::Tensor> mma_forward(
@@ -127,8 +124,9 @@ std::vector<at::Tensor> mma_forward(
 
     AT_TYPE_DISPATCH_SWITCH(Q.scalar_type(), scalar_t, (at::ScalarType::Float, at::ScalarType::Half), (
         VALUE_DISPATCH_SWITCH(V_dim, out_dim, (64), (
-            const dim3 blocks(N / mma::warp_tile<scalar_t>::N_tile, batch);
-            forward_kernel<scalar_t><<<blocks, threads_per_block>>>(
+            const int N_tile = 64;
+            const dim3 blocks(N / N_tile, batch);
+            forward_kernel<scalar_t, out_dim><<<blocks, threads_per_block>>>(
                 ACCESSOR(Q, 3, scalar_t),
                 ACCESSOR(K, 3, scalar_t),
                 ACCESSOR(V, 3, scalar_t),

@@ -3,26 +3,29 @@
 #include<mma.h>
 
 namespace mma {
-    template<typename scalar_t>
+    template<typename scalar_t, int N_tile_, int M_tile_>
     struct warp_tile {
-        // How much data is processed by a single thread:
-        static constexpr int N_thread = 4;
-        static constexpr int M_thread = 4;
-
-        // Thread layout within a warp:
-        static constexpr int N_warp = 8;
-        static constexpr int M_warp = 4;
-        static_assert(N_warp * M_warp == 32);
+        // Dimensions of the tile, in threads:
+        static constexpr int N_tile = N_tile_;
+        static constexpr int M_tile = M_tile_;
+        static constexpr int K_tile = 1;
 
         // Warp layout within a block:
         static constexpr int N_block = 2;
         static constexpr int M_block = 4;
-        static_assert(N_block * M_block * N_warp * M_warp == 256); // blockDim.x
 
-        // Dimensions of the tile, in threads:
-        static constexpr int N_tile = N_warp * N_block * N_thread;
-        static constexpr int M_tile = M_warp * M_block * M_thread;
-        static constexpr int K_tile = 1;
+        // Thread layout within a warp:
+        static constexpr int N_warp = 8;
+        static constexpr int M_warp = 4;
+
+        // How much data is processed by a single thread:
+        static constexpr int N_thread = N_tile / (N_warp * N_block);
+        static constexpr int M_thread = M_tile / (M_warp * M_block);
+
+        static_assert(N_warp * N_block * N_thread == N_tile);
+        static_assert(M_warp * M_block * M_thread == M_tile);
+        static_assert(N_warp * M_warp == 32);
+        static_assert(N_block * M_block * N_warp * M_warp == 256); // blockDim.x
 
         // Registers:
         float C_frag[N_thread * M_thread]; // N x M fragment
@@ -116,27 +119,38 @@ namespace mma {
                 }
             }
         }
+
+        // Stream C from registers to global memory using temporary shared memory buffer
+        template<typename accessor, typename shared_fragment>
+        __device__ void store(accessor gmem, shared_fragment& smem, int tile_x, int tile_y) {
+            store(smem);
+            __syncthreads();
+            smem.store(gmem, tile_x, tile_y);
+        }
     };
 
     using namespace nvcuda;
-    template<>
-    struct warp_tile<c10::Half> {
-        // How much data is processed by a single thread:
-        static constexpr int N_thread = 2;
-        static constexpr int M_thread = 1;
-
-        // Thread layout within a warp:
-        static constexpr int N_warp = 16;
-        static constexpr int M_warp = 16;
+    template<int N_tile_, int M_tile_>
+    struct warp_tile<c10::Half, N_tile_, M_tile_> {
+        // Dimensions of the tile, in threads:
+        static constexpr int N_tile = N_tile_;
+        static constexpr int M_tile = M_tile_;
+        static constexpr int K_tile = 16;
 
         // Warp layout within a block:
         static constexpr int N_block = 2;
         static constexpr int M_block = 4;
 
-        // Dimensions of the tile, in threads:
-        static constexpr int N_tile = N_warp * N_block * N_thread;
-        static constexpr int M_tile = M_warp * M_block * M_thread;
-        static constexpr int K_tile = 16;
+        // Thread layout within a warp:
+        static constexpr int N_warp = 16;
+        static constexpr int M_warp = 16;
+
+        // How much data is processed by a single thread:
+        static constexpr int N_thread = N_tile / (N_warp * N_block);
+        static constexpr int M_thread = M_tile / (M_warp * M_block);
+
+        static_assert(N_warp * N_block * N_thread == N_tile);
+        static_assert(M_warp * M_block * M_thread == M_tile);
 
         // Registers:
         wmma::fragment<wmma::accumulator, 16, 16, 16, half> C_frag[N_thread * M_thread];
@@ -239,6 +253,14 @@ namespace mma {
                     wmma::store_matrix_sync(reinterpret_cast<half*>(&C_sm(y, x)), C_frag[i * M_thread + j], shared_fragment::stride, wmma::mem_col_major);
                 }
             }
+        }
+
+        // Stream C from registers to global memory using temporary shared memory buffer
+        template<typename accessor, typename shared_fragment>
+        __device__ void store(accessor gmem, shared_fragment& smem, int tile_x, int tile_y) {
+            store(smem);
+            __syncthreads();
+            smem.store(gmem, tile_x, tile_y);
         }
     };
 } // namespace mma
